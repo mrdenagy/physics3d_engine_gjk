@@ -1,60 +1,202 @@
+# physics3d_engine_gjk
 
-# Physics3D Java Engine (Near‑Zero GC Build)
+A lightweight **3D rigid-body physics / collision** module in Java, centered around **GJK (Gilbert–Johnson–Keerthi)** for convex intersection and **EPA (Expanding Polytope Algorithm)** for penetration depth/normal, plus a practical simulation loop with broadphase, warm starting, joints, and optional CCD.
 
-A compact but capable **3D rigid‑body physics engine** written in **pure Java** (no external libraries).  
-This build is tuned for **near‑zero garbage collection (GC)** during simulation by using **in‑place “Into” APIs**, cached AABBs, pooled broadphase pairs, and scratch workspaces.
+> **Audience:** developers building simulations, games, or teaching demos that need convex collision detection and a simple rigid-body solver.
 
 ---
 
 ## Highlights
 
-### Core Simulation
-- **3D rigid bodies**: position + quaternion orientation
-- **Forces/torques**, gravity, damping
-- **Impulse-based solver** with friction + restitution
-- **Baumgarte stabilization** + configurable restitution threshold
-- **Sleeping + islands** to reduce jitter and improve performance
+- **Convex collision detection**
+  - **GJK** intersection test (convex shapes)
+  - **EPA** for penetration depth and contact normal after GJK hit
+  - **GJK distance** for closest points (used by CCD)
+  - **Box–Box SAT + face clipping** path producing up to **4 contact points**
 
-### Collision Detection
-- **Broadphase**: 3D spatial hash with:
-  - incremental updates
-  - cached candidate pairs
-  - reusable long hash set for dedupe (no boxing)
-- **Narrowphase**:
-  - **Box–Box**: SAT + face clipping → up to 4 contact points (stable stacks)
-  - **General convex**: **GJK + EPA** for convex shapes
+- **Broadphase**
+  - 3D **spatial hash** broadphase with cached pair generation and allocation-conscious queries
 
-### Contacts
-- **Persistent contact manifolds** (warm-startable)
-- **Warm starting**: cached normal/tangent impulses per contact point
-- **Contact reduction**: chooses stable contact sets (where applicable)
+- **Simulation loop** (`World3D`)
+  - Semi-implicit integration (forces → velocities)
+  - Contact caching via **persistent manifolds** + warm starting
+  - Friction + restitution
+  - Sleeping / deactivation
+  - Optional **CCD** (conservative advancement using GJK distance) for “bullet” bodies
+  - Optional speculative contacts (predictive stabilization)
 
-### Constraints (Joints)
-- **Distance joint**
-- **Hinge (revolute)** with:
-  - motor + limits
-  - stabilized axis alignment
-- **Slider (prismatic)** with:
-  - motor + limits
-  - perpendicular constraint solve
-
-### CCD / TOI
-- **Continuous Collision Detection** (TOI / conservative advancement)
-- Optional **angular motion bound** and substepping behavior (depending on your CCD module version)
-- Works best when `body.bullet = true` for fast movers
+- **Constraints / joints**
+  - `HingeJoint` (revolute) with optional **motor + limits**
+  - `SliderJoint` (prismatic) with optional **motor + limits**
+  - `DistanceJoint`
 
 ---
 
-## Near‑Zero GC Design (What’s Different in This Build)
+## Project Layout
 
-To keep runtime allocations extremely low:
-- **Support mapping is allocation‑free**  
-  `Shape.supportInto(out, dir, pos, orient)` instead of returning new vectors.
-- **AABB computation is allocation‑free**  
-  `Shape.computeAABBInto(out, pos, orient)` writes into an existing `AABB`.
-- **RigidBody caches its AABB**  
-  Each body has `cachedAabb` updated in-place via `updateAABB()`.
-- **Broadphase stores bounds objects per body**  
-  No `new int[]` bounds per update.
-- **Broadphase pair generation uses pooling**  
-  Pairs are reused; dedupe uses a primitive long set (no `HashSet<Long>` boxing).
+The source bundle included here is organized as:
+
+```text
+main/
+  src/
+    physics3d/         # engine (math, shapes, collision, broadphase, solver)
+    demo3d/            # runnable demo
+```
+
+Key entrypoint:
+- `demo3d.DemoMain` – builds a small world with stacks, joints, and a fast-moving “bullet” test.
+
+---
+
+## Requirements
+
+- **JDK 17+** recommended (Java 11+ likely works if you avoid newer language features).
+
+---
+
+## Build & Run (no build tool)
+
+From the repository root:
+
+```bash
+# compile
+mkdir -p out
+javac -d out $(find main/src -name "*.java")
+
+# run the demo
+java -cp out demo3d.DemoMain
+```
+
+Expected output: periodic prints of time, bullet position, slider position, and door angular velocity.
+
+---
+
+## Quick Start (API)
+
+```java
+import physics3d.*;
+
+World3D world = new World3D(2.0f);
+world.gravity.set(0, -9.8f, 0);
+world.enableCCD = true;
+
+RigidBody ground = new RigidBody(
+    new BoxShape(40, 1, 40),
+    RigidBody.Type.STATIC,
+    0,
+    new Vec3(0, -2, 0)
+);
+world.add(ground);
+
+RigidBody box = new RigidBody(
+    new BoxShape(0.5f, 0.5f, 0.5f),
+    RigidBody.Type.DYNAMIC,
+    2.0f,
+    new Vec3(0, 2, 0)
+);
+world.add(box);
+
+float dt = 1f / 60f;
+for (int i = 0; i < 600; i++) {
+    world.step(dt);
+}
+```
+
+---
+
+## Docker
+
+This repo snapshot may not include a `Dockerfile` yet. Below is a solid starting point for a **developer-friendly** container build.
+
+### Dockerfile (recommended)
+
+Create `Dockerfile` at repo root:
+
+```dockerfile
+# ---- build stage ----
+FROM eclipse-temurin:21-jdk AS build
+WORKDIR /app
+
+# copy sources
+COPY main/src ./main/src
+
+# compile
+RUN mkdir -p /app/out \
+ && javac -d /app/out $(find main/src -name "*.java")
+
+# ---- run stage ----
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY --from=build /app/out ./out
+
+# default: run demo
+CMD ["java", "-cp", "out", "demo3d.DemoMain"]
+```
+
+### Build and run
+
+```bash
+docker build -t physics3d_engine_gjk:latest .
+docker run --rm -it physics3d_engine_gjk:latest
+```
+
+### Live iteration (mount your working tree)
+
+```bash
+docker run --rm -it \
+  -v "$PWD":/app \
+  -w /app \
+  eclipse-temurin:21-jdk \
+  bash -lc 'mkdir -p out && javac -d out $(find main/src -name "*.java") && java -cp out demo3d.DemoMain'
+```
+
+### docker-compose (optional)
+
+Create `docker-compose.yml`:
+
+```yaml
+services:
+  demo:
+    build: .
+    image: physics3d_engine_gjk:latest
+    command: ["java", "-cp", "out", "demo3d.DemoMain"]
+```
+
+Run:
+
+```bash
+docker compose up --build
+```
+
+---
+
+## Notes on Design
+
+### Shapes
+- `SphereShape`, `BoxShape`, `ConvexHullShape` implement `Shape`.
+- Shapes provide allocation-conscious **support mapping** (`supportInto`) and **AABB** (`computeAABBInto`).
+
+### Narrowphase
+- General convex: **GJK → EPA**
+- Box–box: **SAT + clipping** to get multiple contact points.
+
+### Broadphase
+- `SpatialHashBroadphase3D` hashes AABBs into grid cells, generates unique pairs, and supports query by AABB.
+
+### Solver
+- `World3D.step(dt)` integrates forces, builds contacts, warm starts, solves constraints (contacts + joints), and updates sleeping.
+
+---
+
+## Extending
+
+Ideas:
+- Add more shapes (capsule, cylinder) using the same `supportInto` pattern.
+- Add debug rendering hooks (draw AABBs, contact points, normals).
+- Add unit tests for GJK/EPA and joint stability.
+
+---
+
+## License
+
+Add a license file (`LICENSE`) to clarify usage.
