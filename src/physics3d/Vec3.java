@@ -179,4 +179,3 @@ public final class Vec3 {
         return "Vec3(" + x + "," + y + "," + z + ")";
     }
 }
-``
